@@ -41,6 +41,12 @@ data class GestureSettings(
     val haptics: Boolean = true,
     val recentVertical: Boolean = false,
     val recentHeightDp: Int = 48,
+    /** Trigger handle on the bottom edge instead of the right edge */
+    val triggerBottom: Boolean = false,
+    /** Handle size along the edge it sits on, in dp */
+    val triggerLengthDp: Int = 200,
+    /** Handle size away from the edge (width in right mode, height in bottom mode), in dp */
+    val triggerThicknessDp: Int = 14,
 )
 
 /**
@@ -59,6 +65,9 @@ object FavoritesRepository {
     private val KEY_HAPTICS = booleanPreferencesKey("gesture_haptics")
     private val KEY_RECENT_VERTICAL = booleanPreferencesKey("recent_vertical")
     private val KEY_RECENT_HEIGHT = intPreferencesKey("recent_height_dp")
+    private val KEY_TRIGGER_BOTTOM = booleanPreferencesKey("trigger_bottom")
+    private val KEY_TRIGGER_LENGTH = intPreferencesKey("trigger_length_dp")
+    private val KEY_TRIGGER_THICKNESS = intPreferencesKey("trigger_thickness_dp")
 
     fun selectedAppsFlow(context: Context): Flow<Set<String>> =
         context.dataStore.data.map { it[KEY_SELECTED] ?: emptySet() }
@@ -84,6 +93,9 @@ object FavoritesRepository {
                 haptics = it[KEY_HAPTICS] ?: d.haptics,
                 recentVertical = it[KEY_RECENT_VERTICAL] ?: d.recentVertical,
                 recentHeightDp = it[KEY_RECENT_HEIGHT] ?: d.recentHeightDp,
+                triggerBottom = it[KEY_TRIGGER_BOTTOM] ?: d.triggerBottom,
+                triggerLengthDp = it[KEY_TRIGGER_LENGTH] ?: d.triggerLengthDp,
+                triggerThicknessDp = it[KEY_TRIGGER_THICKNESS] ?: d.triggerThicknessDp,
             )
         }
 
@@ -109,6 +121,18 @@ object FavoritesRepository {
 
     suspend fun setRecentHeightDp(context: Context, dp: Int) {
         context.dataStore.edit { it[KEY_RECENT_HEIGHT] = dp }
+    }
+
+    suspend fun setTriggerBottom(context: Context, bottom: Boolean) {
+        context.dataStore.edit { it[KEY_TRIGGER_BOTTOM] = bottom }
+    }
+
+    suspend fun setTriggerLengthDp(context: Context, dp: Int) {
+        context.dataStore.edit { it[KEY_TRIGGER_LENGTH] = dp }
+    }
+
+    suspend fun setTriggerThicknessDp(context: Context, dp: Int) {
+        context.dataStore.edit { it[KEY_TRIGGER_THICKNESS] = dp }
     }
 
     suspend fun setSelectedApps(context: Context, packages: Set<String>) {

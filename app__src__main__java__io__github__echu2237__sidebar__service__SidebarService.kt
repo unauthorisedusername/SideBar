@@ -75,6 +75,9 @@ class SidebarService : Service() {
     private var panelOpenedAtMs = 0L
     private var freeformUnavailableNotified = false
     private var lastDragFraction = 0f
+    /** Handle/panel placement currently on screen (bottom edge vs right edge) */
+    private var bottomMode = false
+    private var appliedLayout: Triple<Boolean, Int, Int>? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Gesture settings, kept up to date from DataStore so touch handling never blocks on disk
@@ -98,13 +101,16 @@ class SidebarService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         isRunning = true
         scope.launch {
-            FavoritesRepository.gestureSettingsFlow(this@SidebarService).collect { gestures = it }
+            FavoritesRepository.gestureSettingsFlow(this@SidebarService).collect {
+                gestures = it
+                // Create the handle on the first emission; rebuild it when placement or size settings change
+                mainHandler.post { if (isRunning) applyTriggerLayoutIfChanged() }
+            }
         }
         runCatching {
             (getSystemService(Context.CAMERA_SERVICE) as CameraManager).registerTorchCallback(torchCallback, mainHandler)
         }
         startAsForeground()
-        showTrigger()
         Thread { RecentAppsRepository.prewarm(this) }.start()
         // When Shizuku is already authorized, pre-bind the shell service so the first floating-window launch is instant
         if (ShizukuManager.isPermissionGranted) {
@@ -137,11 +143,44 @@ class SidebarService : Service() {
 
     // ---------- overlay management ----------
 
+    /** Rebuild the handle (and drop the panel windows when switching edge) if the placement/size settings changed */
+    private fun applyTriggerLayoutIfChanged() {
+        val g = gestures
+        val key = Triple(g.triggerBottom, g.triggerLengthDp, g.triggerThicknessDp)
+        if (key == appliedLayout) return
+        val edgeChanged = appliedLayout?.first != g.triggerBottom
+        appliedLayout = key
+        triggerView?.let { safelyRemoveView(it) }
+        triggerView = null
+        if (edgeChanged) {
+            // Panel windows are built for one orientation: recreate them lazily for the new edge
+            panelAnimator?.cancel()
+            panelAnimator = null
+            panelView?.let { safelyRemoveView(it) }
+            panelView = null
+            closingPanel?.let { safelyRemoveView(it) }
+            closingPanel = null
+            parkedPanel?.let { safelyRemoveView(it) }
+            parkedPanel = null
+            bottomMode = g.triggerBottom
+        }
+        showTrigger()
+    }
+
+    private fun slideOf(p: PanelView): Float = if (bottomMode) p.translationY else p.translationX
+
+    private fun setSlide(p: PanelView, v: Float) {
+        if (bottomMode) p.translationY = v else p.translationX = v
+    }
+
     private fun showTrigger() {
         val dm = resources.displayMetrics
+        val g = gestures
+        val bottom = bottomMode
         val trigger = EdgeTriggerView(
             context = this,
-            panelWidthPx = dp(96f), // matches the panel width (drag progress is computed from it)
+            panelWidthPx = dp(96f), // matches the panel thickness (drag progress is computed from it)
+            bottom = bottom,
             onTap = { performGesture(gestures.tap) },
             onDoubleTap = {
                 feedback()
@@ -157,19 +196,29 @@ class SidebarService : Service() {
             onDragProgress = { fraction -> updatePanelPreview(fraction) },
             onDragSettle = { open -> settlePanelPreview(open) },
         )
-        // Trigger strip: window hugs the right edge, visual handle is drawn flush at the far right.
-        // Window is 14dp wide: the rightmost ~20dp inside apps is intercepted by the HyperOS back-gesture zone (system level),
-        // an inherent limitation of the edge-hugging approach; height is limited to the middle 30% of the screen.
+        // Handle window hugs the right edge (or the bottom edge). Thickness = size away from the edge, length = size along it.
+        // Both come from settings. Right edge: the rightmost ~20dp inside apps is the system back-gesture zone, so we also
+        // register a gesture-exclusion rect (see EdgeTriggerView) and a thicker handle lets the drag start outside that zone.
+        val maxLen = if (bottom) dm.widthPixels else dm.heightPixels
+        val lengthPx = dp(g.triggerLengthDp.toFloat()).coerceIn(dp(40f), maxLen)
+        val thicknessPx = dp(g.triggerThicknessDp.toFloat()).coerceAtLeast(dp(8f))
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        if (bottom) {
+            // Sit at the physical bottom edge, not above the gesture-navigation inset
+            flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        }
         val params = WindowManager.LayoutParams(
-            dp(14f),
-            (dm.heightPixels * 0.3f).toInt(),
+            if (bottom) lengthPx else thicknessPx,
+            if (bottom) thicknessPx else lengthPx,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            flags,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            gravity = if (bottom) Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL else Gravity.END or Gravity.CENTER_VERTICAL
             x = 0 // flush with the edge
+            y = 0
         }
         windowManager.addView(trigger, params)
         triggerView = trigger
@@ -305,14 +354,14 @@ class SidebarService : Service() {
         // Suppress spurious OUTSIDE dismissal during preview
         panelOpenedAtMs = SystemClock.uptimeMillis()
         panel.alpha = 1f
-        panel.translationX = panelWidthPx.toFloat()
+        setSlide(panel, panelWidthPx.toFloat())
         loadAppsInto(panel)
     }
 
     private fun updatePanelPreview(fraction: Float) {
         val panel = panelView ?: return
         lastDragFraction = fraction
-        panel.translationX = panelWidthPx * (1f - fraction)
+        setSlide(panel, panelWidthPx * (1f - fraction))
     }
 
     /** Release: drag progress decides whether to expand or snap back and collapse */
@@ -323,11 +372,11 @@ class SidebarService : Service() {
             panelOpenedAtMs = SystemClock.uptimeMillis()
             wakePanelWindow(panel)
             setTriggerVisible(false) // hide the handle once the panel is expanded
-            animatePanel(panel, panel.translationX, 0f, 200L, onEnd = null)
+            animatePanel(panel, slideOf(panel), 0f, 200L, onEnd = null)
         } else {
             panelView = null
             closingPanel = panel
-            animatePanel(panel, panel.translationX, panelWidthPx.toFloat(), 160L) {
+            animatePanel(panel, slideOf(panel), panelWidthPx.toFloat(), 160L) {
                 parkPanel(panel)
                 setTriggerVisible(true)
                 if (closingPanel === panel) closingPanel = null
@@ -367,30 +416,36 @@ class SidebarService : Service() {
         panelHeightPx = (dm.heightPixels * 0.72f).toInt()
         val p = PanelView(
             this,
+            horizontal = bottomMode,
             onAppClick = { app -> launchApp(app) },
             onDismiss = {
                 // Ignore OUTSIDE for 350ms after opening (the finger lifting from the summon gesture immediately fires one OUTSIDE)
                 if (SystemClock.uptimeMillis() - panelOpenedAtMs > 350) hidePanel()
             },
         )
+        var panelFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE // does not take touches during preview
+        if (bottomMode) {
+            panelFlags = panelFlags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        }
         val params = WindowManager.LayoutParams(
-            panelWidth,
-            (dm.heightPixels * 0.72f).toInt(),
+            if (bottomMode) (dm.widthPixels * 0.92f).toInt() else panelWidth,
+            if (bottomMode) panelWidth else (dm.heightPixels * 0.72f).toInt(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE, // does not take touches during preview
+            panelFlags,
             // Note: do not use FLAG_BLUR_BEHIND — HyperOS implements cross-window blur for third-party overlays
             // very poorly; user testing showed it causes lag and even full-device freezes (reported in stage 1, reproduced in stage 5)
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            gravity = if (bottomMode) Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL else Gravity.END or Gravity.CENTER_VERTICAL
             x = 0
             y = 0
             windowAnimations = 0 // stop the system (HyperOS) from applying default enter/exit animations to the overlay window
         }
-        p.translationX = panelWidth.toFloat()
+        setSlide(p, panelWidth.toFloat())
         windowManager.addView(p, params)
         return p
     }
@@ -427,7 +482,7 @@ class SidebarService : Service() {
         wakePanelWindow(panel)
         setTriggerVisible(false) // hide the handle once the panel is expanded
         panel.alpha = 1f
-        panel.translationX = panelWidthPx.toFloat()
+        setSlide(panel, panelWidthPx.toFloat())
         animatePanel(panel, panelWidthPx.toFloat(), 0f, 260L, onEnd = null)
         loadAppsInto(panel)
     }
@@ -437,8 +492,8 @@ class SidebarService : Service() {
         val panel = panelView ?: run { then?.invoke(); return }
         panelView = null
         closingPanel = panel
-        val target = maxOf(panel.width, panelWidthPx).toFloat()
-        animatePanel(panel, panel.translationX, target, 180L) {
+        val target = maxOf(if (bottomMode) panel.height else panel.width, panelWidthPx).toFloat()
+        animatePanel(panel, slideOf(panel), target, 180L) {
             parkPanel(panel)
             setTriggerVisible(true) // restore the handle after collapse
             if (closingPanel === panel) closingPanel = null
@@ -484,13 +539,13 @@ class SidebarService : Service() {
         onEnd: (() -> Unit)?,
     ) {
         panelAnimator?.cancel()
-        panel.translationX = from
+        setSlide(panel, from)
         val closing = to != 0f
         val anim = ValueAnimator.ofFloat(from, to).apply {
             interpolator = if (!closing) OvershootInterpolator(1.05f) else DecelerateInterpolator()
             this.duration = duration
             addUpdateListener { animation ->
-                panel.translationX = animation.animatedValue as Float
+                setSlide(panel, animation.animatedValue as Float)
                 if (closing) {
                     panel.alpha = 1f - animation.animatedFraction
                 }

@@ -26,11 +26,14 @@ import io.github.echu2237.sidebar.dp
  */
 class PanelView(
     context: Context,
+    /** true = horizontal strip along the bottom edge (icons scroll sideways, swipe down dismisses) */
+    private val horizontal: Boolean,
     private val onAppClick: (AppEntry) -> Unit,
     private val onDismiss: () -> Unit,
 ) : FrameLayout(context) {
 
-    private val listView: ListView
+    private var listView: ListView? = null
+    private var hRow: LinearLayout? = null
     private val emptyHint: TextView
     private var apps: List<AppEntry> = emptyList()
 
@@ -52,24 +55,40 @@ class PanelView(
 
         // Native MIUI style: narrow strip panel, icons only, no names
         val root = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8f), dp(12f), dp(8f), dp(12f))
+            orientation = if (horizontal) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            if (horizontal) setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            else setPadding(dp(8f), dp(12f), dp(8f), dp(12f))
         }
 
-        listView = ListView(context).apply {
-            this.adapter = this@PanelView.adapter
-            divider = null
-            dividerHeight = 0
-            setVerticalScrollBarEnabled(false) // a flashing scrollbar is also a source of distraction
-            setWillNotDraw(true) // ListView only does layout itself; drawing is left to the child rows
-            cacheColorHint = 0x00000000
-            overScrollMode = OVER_SCROLL_NEVER
-            clipToPadding = false
+        if (horizontal) {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            hRow = row
+            val scroller = android.widget.HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = OVER_SCROLL_NEVER
+                addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+            root.addView(scroller, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        } else {
+            val lv = ListView(context).apply {
+                this.adapter = this@PanelView.adapter
+                divider = null
+                dividerHeight = 0
+                setVerticalScrollBarEnabled(false) // a flashing scrollbar is also a source of distraction
+                setWillNotDraw(true) // ListView only does layout itself; drawing is left to the child rows
+                cacheColorHint = 0x00000000
+                overScrollMode = OVER_SCROLL_NEVER
+                clipToPadding = false
+            }
+            listView = lv
+            root.addView(
+                lv,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+            )
         }
-        root.addView(
-            listView,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
-        )
 
         emptyHint = TextView(context).apply {
             text = context.getString(R.string.panel_loading)
@@ -92,7 +111,18 @@ class PanelView(
         this.apps = apps
         emptyHint.text = context.getString(R.string.panel_empty)
         emptyHint.visibility = if (apps.isEmpty()) View.VISIBLE else View.GONE
-        adapter.notifyDataSetChanged()
+        val row = hRow
+        if (row != null) {
+            row.removeAllViews()
+            for (app in apps) {
+                row.addView(
+                    AppRow(context).also { it.bind(app) },
+                    LinearLayout.LayoutParams(dp(60f), ViewGroup.LayoutParams.MATCH_PARENT),
+                )
+            }
+        } else {
+            adapter.notifyDataSetChanged()
+        }
     }
 
     /** Single app row: icon only, centered (native MIUI style), reused via ViewHolder */
@@ -131,6 +161,7 @@ class PanelView(
     }
 
     private var downX = 0f
+    private var downY = 0f
     private var swipeConsumed = false
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -141,11 +172,13 @@ class PanelView(
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.rawX
+                downY = ev.rawY
                 swipeConsumed = false
             }
             MotionEvent.ACTION_MOVE -> {
                 // Swiping right off the panel also dismisses it
-                if (!swipeConsumed && ev.rawX - downX > dp(56f)) {
+                val swipe = if (horizontal) ev.rawY - downY else ev.rawX - downX
+                if (!swipeConsumed && swipe > dp(56f)) {
                     swipeConsumed = true
                     onDismiss()
                     return true

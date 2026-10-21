@@ -28,6 +28,8 @@ import kotlin.math.abs
 class EdgeTriggerView(
     context: Context,
     private val panelWidthPx: Int,
+    /** true = handle sits on the bottom edge and is dragged up; false = right edge, dragged left */
+    private val bottom: Boolean,
     private val onTap: () -> Unit,
     private val onDoubleTap: () -> Unit,
     private val onHold: () -> Unit,
@@ -79,10 +81,43 @@ class EdgeTriggerView(
         edgePaint.strokeWidth = dp(0.75f).toFloat().coerceAtLeast(1f)
     }
 
+    private val exclusion = listOf(android.graphics.Rect())
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        updateGestureExclusion()
+    }
+
+    /** Ask the system not to treat edge swipes inside this strip as the back gesture (Android caps this at 200dp tall per edge) */
+    private fun updateGestureExclusion() {
+        if (width == 0 || height == 0) return
+        // Only the right-edge strip conflicts with the back gesture; the bottom edge belongs to home/recents, which apps cannot exclude
+        if (bottom) {
+            systemGestureExclusionRects = emptyList()
+            return
+        }
+        val h = minOf(height, dp(200f))
+        val top = (height - h) / 2
+        exclusion[0].set(0, top, width, top + h)
+        systemGestureExclusionRects = exclusion
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val half = dp(56f) / 2f
-        val pillW = dp(5f)
+        updateGestureExclusion()
+        // Pill scales with the window: length ~28% of the strip, thickness ~36% of the window depth (14dp -> 5dp)
+        if (bottom) {
+            val half = width * 0.28f / 2f
+            val pillT = maxOf(dp(5f).toFloat(), height * 0.36f)
+            val top = height * 0.92f - pillT
+            val r = pillT / 2f
+            pillRect.set(width / 2f - half, top, width / 2f + half, top + pillT)
+            canvas.drawRoundRect(pillRect, r, r, pillPaint)
+            canvas.drawRoundRect(pillRect, r, r, edgePaint)
+            return
+        }
+        val half = height * 0.28f / 2f
+        val pillW = maxOf(dp(5f).toFloat(), width * 0.36f)
         val right = width * 0.92f
         val left = right - pillW
         val r = pillW / 2f
@@ -112,7 +147,8 @@ class EdgeTriggerView(
                     cancelHold()
                 }
                 if (holdFired) return true
-                val dx = downX - event.rawX
+                // Progress along the drag axis: left for the right-edge handle, up for the bottom handle
+                val dx = if (bottom) downY - event.rawY else downX - event.rawX
                 if (!dragging && dx > touchSlop) {
                     dragging = true
                     secondTap = false

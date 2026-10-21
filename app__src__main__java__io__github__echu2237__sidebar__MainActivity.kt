@@ -246,10 +246,36 @@ fun MainScreen(onManageApps: () -> Unit) {
         // 03 Gestures
         AkPanel("03", "GESTURES") {
             AkText(
-                "What happens when you use the edge handle. Dragging left always opens the sidebar.",
+                "What happens when you use the edge handle. Dragging away from the edge (left or up) always opens the sidebar.",
                 color = AkColors.TextDim,
                 size = 10,
             )
+            AkSelectRow(
+                "Handle position",
+                if (gestures.triggerBottom) "Bottom edge" else "Right edge",
+                options = listOf("right" to "Right edge", "bottom" to "Bottom edge"),
+            ) { id ->
+                scope.launch { FavoritesRepository.setTriggerBottom(context, id == "bottom") }
+            }
+            AkText(
+                if (gestures.triggerBottom) {
+                    "Bottom edge: drag up to open the sidebar. Length is the width along the bottom, thickness is the height of the handle. Thicker is easier to grab above the system home gesture."
+                } else {
+                    "Right edge: drag left to open the sidebar. Length is the height along the edge, thickness is the width of the handle. A thicker handle can be grabbed away from the back-gesture zone."
+                },
+                color = AkColors.TextDim,
+                size = 10,
+            )
+            AkSliderRow(
+                "Handle length",
+                gestures.triggerLengthDp,
+                40f..500f,
+            ) { v -> scope.launch { FavoritesRepository.setTriggerLengthDp(context, v) } }
+            AkSliderRow(
+                "Handle thickness",
+                gestures.triggerThicknessDp,
+                8f..60f,
+            ) { v -> scope.launch { FavoritesRepository.setTriggerThicknessDp(context, v) } }
             AkSelectRow("Single tap", GestureActions.label(gestures.tap)) { id ->
                 scope.launch { FavoritesRepository.setTapAction(context, id) }
             }
@@ -467,6 +493,31 @@ fun MainScreen(onManageApps: () -> Unit) {
 }
 
 /** Label on the left, current choice on the right; tapping it opens a dropdown of [GestureActions.all] */
+@Composable
+private fun AkSliderRow(
+    label: String,
+    valueDp: Int,
+    range: ClosedFloatingPointRange<Float>,
+    onCommit: (Int) -> Unit,
+) {
+    var v by remember(valueDp) { mutableFloatStateOf(valueDp.toFloat()) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        AkText(label, size = 12, modifier = Modifier.weight(1f))
+        AkText("${v.toInt()} dp", size = 12, color = AkColors.Accent)
+    }
+    Slider(
+        value = v,
+        onValueChange = { v = it },
+        onValueChangeFinished = { onCommit(v.toInt()) },
+        valueRange = range,
+        colors = SliderDefaults.colors(
+            thumbColor = AkColors.Accent,
+            activeTrackColor = AkColors.Accent,
+            inactiveTrackColor = AkColors.Line,
+        ),
+    )
+}
+
 @Composable
 private fun AkSelectRow(
     label: String,
