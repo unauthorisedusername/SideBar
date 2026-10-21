@@ -2,10 +2,8 @@ package io.github.echu2237.sidebar.overlay
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
-import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
@@ -23,9 +21,7 @@ import kotlin.math.abs
  * - Hold           -> [onHold] (only when [isHoldEnabled] is true)
  * - Drag left      -> panel follows the finger as a preview [onDragProgress]; on release, progress decides expand/collapse [onDragSettle]
  *
- * Visuals: two-tone handle — dark outer stroke + light inner core.
- * On light pages (e.g. WeChat) the dark outline keeps it visible; on dark pages the light core does.
- * A soft dark halo adds separation on both kinds of background.
+ * Visuals: one slim white pill with a faint hairline edge (visible on light and dark pages).
  *
  * Position: the window hugs the right edge of the screen.
  */
@@ -42,23 +38,13 @@ class EdgeTriggerView(
     private val onDragSettle: (Boolean) -> Unit,
 ) : View(context) {
 
-    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = null }
-    private val pillStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    /** Single clean pill: soft white fill with one hairline edge for contrast on any background */
+    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE8FFFFFF.toInt() }
+    private val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.5f
-    }
-    /** Dark outline: the source of visibility on light backgrounds */
-    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        color = 0x66000000
-    }
-    /** Soft dark halo: makes the handle "float" off any background */
-    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        color = 0x1F000000
+        color = 0x2E000000
     }
     private val pillRect = RectF()
-    private val innerRect = RectF()
 
     private var downX = 0f
     private var downY = 0f
@@ -90,51 +76,19 @@ class EdgeTriggerView(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        pillPaint.shader = LinearGradient(
-            0f, 0f, 0f, h.toFloat(),
-            0xF5FFFFFF.toInt(), 0xD9EEF4F9.toInt(),
-            Shader.TileMode.CLAMP,
-        )
-        pillStrokePaint.shader = LinearGradient(
-            0f, 0f, 0f, h.toFloat(),
-            0xFFFFFFFF.toInt(), 0x66FFFFFF.toInt(),
-            Shader.TileMode.CLAMP,
-        )
-        outlinePaint.strokeWidth = dp(1.5f).toFloat()
-        haloPaint.strokeWidth = dp(4f).toFloat()
+        edgePaint.strokeWidth = dp(0.75f).toFloat().coerceAtLeast(1f)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val pillH = dp(120f)
-        val half = pillH / 2f
-        // The handle hugs the right screen edge (window right edge = screen right edge)
-        val pillW = dp(7f)
+        val half = dp(56f) / 2f
+        val pillW = dp(5f)
         val right = width * 0.92f
         val left = right - pillW
         val r = pillW / 2f
         pillRect.set(left, height / 2f - half, right, height / 2f + half)
-
-        // 1) Soft dark halo (extends outward, low-opacity overlay, hardware-draw friendly)
-        for (i in 3 downTo 1) {
-            val off = dp(i.toFloat() * 1.2f)
-            canvas.drawRoundRect(
-                pillRect.left - off, pillRect.top - off,
-                pillRect.right + off, pillRect.bottom + off,
-                r + off, r + off, haloPaint,
-            )
-        }
-        // 2) Dark outline: the source of visibility on light pages
-        canvas.drawRoundRect(pillRect, r, r, outlinePaint)
-        // 3) Light inner core (gradient + top highlight)
-        val inset = dp(1.2f)
-        innerRect.set(
-            pillRect.left + inset, pillRect.top + inset,
-            pillRect.right - inset, pillRect.bottom - inset,
-        )
-        val ir = (r - inset).coerceAtLeast(1f)
-        canvas.drawRoundRect(innerRect, ir, ir, pillPaint)
-        canvas.drawRoundRect(innerRect, ir, ir, pillStrokePaint)
+        canvas.drawRoundRect(pillRect, r, r, pillPaint)
+        canvas.drawRoundRect(pillRect, r, r, edgePaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

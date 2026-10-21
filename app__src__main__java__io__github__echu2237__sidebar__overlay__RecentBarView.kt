@@ -1,14 +1,11 @@
 package io.github.echu2237.sidebar.overlay
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
-import android.view.animation.LinearInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -28,8 +25,6 @@ class RecentBarView(
     private val onAppClick: (AppEntry) -> Unit,
     private val onDismiss: () -> Unit,
 ) : FrameLayout(context) {
-
-    private var blinkAnimator: ObjectAnimator? = null
 
     init {
         background = GradientDrawable().apply {
@@ -87,25 +82,21 @@ class RecentBarView(
         animate().alpha(1f).translationX(0f).translationY(0f).setDuration(90L).start()
     }
 
-    /** Close: a very short blink, then disappear */
+    /** Close: one smooth fade + small slide, no blinking */
     fun animateOut(onEnd: () -> Unit) {
         animate().cancel()
-        blinkAnimator?.cancel()
-        blinkAnimator = ObjectAnimator.ofFloat(this, ALPHA, 1f, 0.2f, 0.9f, 0.15f, 0.7f, 0f).apply {
-            duration = 240L
-            interpolator = LinearInterpolator()
-            addListener(object : AnimatorListenerAdapter() {
-                private var cancelled = false
-                override fun onAnimationCancel(animation: Animator) {
-                    cancelled = true
-                }
-
-                override fun onAnimationEnd(animation: Animator) {
-                    if (!cancelled) onEnd()
-                }
-            })
-            start()
-        }
+        val d = dp(24f).toFloat()
+        animate()
+            .alpha(0f)
+            .translationX(if (vertical) d else 0f)
+            .translationY(if (vertical) 0f else d)
+            .setDuration(120L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                visibility = INVISIBLE // hide before the window is removed, so no leftover frame shows
+                onEnd()
+            }
+            .start()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
