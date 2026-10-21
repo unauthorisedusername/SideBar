@@ -43,7 +43,7 @@ import kotlin.math.min
  * - Everything is right-angled / 45° chamfered, never rounded
  * - Thin white strokes + corner marks + diagonal stripes
  * - Yellow (#FFD400) as the accent color, for title indices and key states
- * - Monospace font + wide letter spacing + all-caps labels for a terminal/HUD feel
+ * - Clean sans-serif font (readable) + all-caps labels for a HUD feel
  */
 object AkColors {
     val Bg = Color(0xFF0B0B0B)
@@ -115,7 +115,7 @@ fun AkText(
     text: String,
     color: Color = AkColors.Text,
     size: Int = 13,
-    mono: Boolean = true,
+    mono: Boolean = false,
     bold: Boolean = false,
     spacing: Float = 1f,
     modifier: Modifier = Modifier,
@@ -125,8 +125,8 @@ fun AkText(
         modifier = modifier,
         color = color,
         fontSize = size.sp,
-        letterSpacing = spacing.sp,
-        fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+        letterSpacing = (spacing * 0.35f).sp, // gentle tracking: wide spacing hurts readability
+        fontFamily = if (mono) FontFamily.Monospace else FontFamily.SansSerif,
         fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
     )
 }

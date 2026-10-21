@@ -28,6 +28,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -51,6 +53,9 @@ import androidx.core.graphics.drawable.toBitmap
 import io.github.echu2237.sidebar.data.AppEntry
 import io.github.echu2237.sidebar.data.AppRepository
 import io.github.echu2237.sidebar.data.FavoritesRepository
+import io.github.echu2237.sidebar.data.GestureActions
+import io.github.echu2237.sidebar.data.GestureSettings
+import io.github.echu2237.sidebar.data.RecentAppsRepository
 import io.github.echu2237.sidebar.freeform.FreeformLauncher
 import io.github.echu2237.sidebar.service.SidebarService
 import io.github.echu2237.sidebar.shizuku.ShizukuManager
@@ -73,6 +78,7 @@ class MainActivity : ComponentActivity() {
 
     internal val hasOverlayPermission = mutableStateOf(false)
     internal val serviceRunning = mutableStateOf(false)
+    internal val usageAccess = mutableStateOf(false)
     internal val freeformState = mutableStateOf(Pair(false, false)) // freeform windows on, force-resizable on
     internal val shizukuState = mutableStateOf(Triple(false, false, false)) // installed, active, granted
 
@@ -121,6 +127,7 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun refreshShizukuState() {
+        usageAccess.value = RecentAppsRepository.hasUsageAccess(this)
         freeformState.value = Pair(
             FreeformLauncher.isFreeformSettingOn(this),
             FreeformLauncher.isForceResizableOn(this),
@@ -157,6 +164,9 @@ fun MainScreen(onManageApps: () -> Unit) {
     val serviceRunning = activity?.serviceRunning?.value ?: false
     val shizuku = activity?.shizukuState?.value ?: Triple(false, false, false)
     val (freeformOn, forceResizable) = activity?.freeformState?.value ?: Pair(false, false)
+    val gestures by remember { FavoritesRepository.gestureSettingsFlow(context) }
+        .collectAsState(initial = GestureSettings())
+    val usageAccess = activity?.usageAccess?.value ?: false
     val preferShizuku by remember { FavoritesRepository.preferShizukuFlow(context) }
         .collectAsState(initial = false)
 
@@ -230,8 +240,71 @@ fun MainScreen(onManageApps: () -> Unit) {
             AkButton("Manage apps", primary = true, onClick = onManageApps)
         }
 
-        // 03 Floating window mode
-        AkPanel("03", "FREEFORM WINDOWS") {
+        // 03 Gestures
+        AkPanel("03", "GESTURES") {
+            AkText(
+                "What happens when you use the edge handle. Dragging left always opens the sidebar.",
+                color = AkColors.TextDim,
+                size = 10,
+            )
+            AkSelectRow("Single tap", GestureActions.label(gestures.tap)) { id ->
+                scope.launch { FavoritesRepository.setTapAction(context, id) }
+            }
+            AkSelectRow("Double tap", GestureActions.label(gestures.doubleTap)) { id ->
+                scope.launch { FavoritesRepository.setDoubleTapAction(context, id) }
+            }
+            AkSelectRow("Hold", GestureActions.label(gestures.hold)) { id ->
+                scope.launch { FavoritesRepository.setHoldAction(context, id) }
+            }
+            if (gestures.doubleTap != GestureActions.NONE) {
+                AkText(
+                    "With double tap on, a single tap waits a moment to check for a second tap.",
+                    color = AkColors.TextDim,
+                    size = 10,
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    AkText("Vibrate on double tap / hold", size = 12)
+                }
+                AkSwitch(checked = gestures.haptics) { checked ->
+                    scope.launch { FavoritesRepository.setGestureHaptics(context, checked) }
+                }
+            }
+            val usesRecents = GestureActions.RECENTS in listOf(gestures.tap, gestures.doubleTap, gestures.hold)
+            if (usesRecents) {
+                AkStatusRow(
+                    "Usage access (recent apps)",
+                    if (usageAccess) "Granted" else "Not granted",
+                    if (usageAccess) AkColors.Ok else AkColors.Warn,
+                )
+                if (!usageAccess) {
+                    AkText(
+                        "The recent apps bar needs the \"Usage access\" permission. Find Sidebar in the list and allow it.",
+                        color = AkColors.Warn,
+                        size = 10,
+                    )
+                    AkButton("Grant usage access", primary = true) {
+                        try {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_USAGE_ACCESS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                            )
+                        } catch (_: Exception) {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 04 Floating window mode
+        AkPanel("04", "FREEFORM WINDOWS") {
             AkStatusRow(
                 "Freeform windows (system)",
                 if (freeformOn) "On" else "Off",
@@ -307,8 +380,8 @@ fun MainScreen(onManageApps: () -> Unit) {
             }
         }
 
-        // 04 Background survival
-        AkPanel("04", "BACKGROUND") {
+        // 05 Background survival
+        AkPanel("05", "BACKGROUND") {
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -358,6 +431,43 @@ fun MainScreen(onManageApps: () -> Unit) {
             size = 9,
             spacing = 1.5f,
         )
+    }
+}
+
+/** Label on the left, current choice on the right; tapping it opens a dropdown of [GestureActions.all] */
+@Composable
+private fun AkSelectRow(label: String, value: String, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        AkText(label, size = 12, modifier = Modifier.weight(1f))
+        Box {
+            Row(
+                Modifier
+                    .border(1.dp, AkColors.LineBright)
+                    .clickable { open = true }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AkText(value, size = 12)
+                Spacer(Modifier.width(8.dp))
+                AkText("▼", color = AkColors.TextDim, size = 9)
+            }
+            DropdownMenu(
+                expanded = open,
+                onDismissRequest = { open = false },
+                containerColor = AkColors.PanelAlt,
+            ) {
+                GestureActions.all.forEach { (id, text) ->
+                    DropdownMenuItem(
+                        text = { AkText(text, size = 13) },
+                        onClick = {
+                            open = false
+                            onSelect(id)
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

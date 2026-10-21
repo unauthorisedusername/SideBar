@@ -3,6 +3,7 @@ package io.github.echu2237.sidebar.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -11,6 +12,33 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 
 private val Context.dataStore by preferencesDataStore(name = "sidebar_settings")
+
+/** What a gesture on the edge handle can do */
+object GestureActions {
+    const val PANEL = "panel"
+    const val RECENTS = "recents"
+    const val FLASHLIGHT = "flashlight"
+    const val SETTINGS = "settings"
+    const val NONE = "none"
+
+    /** id to label, in the order shown in the settings dropdowns */
+    val all: List<Pair<String, String>> = listOf(
+        PANEL to "Open sidebar",
+        RECENTS to "Recent apps bar",
+        FLASHLIGHT to "Flashlight",
+        SETTINGS to "Open Sidebar settings",
+        NONE to "Nothing",
+    )
+
+    fun label(id: String): String = all.firstOrNull { it.first == id }?.second ?: "Nothing"
+}
+
+data class GestureSettings(
+    val tap: String = GestureActions.PANEL,
+    val doubleTap: String = GestureActions.RECENTS,
+    val hold: String = GestureActions.NONE,
+    val haptics: Boolean = true,
+)
 
 /**
  * Persistence for favorites and settings (DataStore).
@@ -22,6 +50,10 @@ object FavoritesRepository {
     private val KEY_SELECTED = stringSetPreferencesKey("selected_apps")
     private val KEY_AUTOSTART = booleanPreferencesKey("autostart_enabled")
     private val KEY_PREFER_SHIZUKU = booleanPreferencesKey("prefer_shizuku")
+    private val KEY_TAP = stringPreferencesKey("gesture_tap")
+    private val KEY_DOUBLE_TAP = stringPreferencesKey("gesture_double_tap")
+    private val KEY_HOLD = stringPreferencesKey("gesture_hold")
+    private val KEY_HAPTICS = booleanPreferencesKey("gesture_haptics")
 
     fun selectedAppsFlow(context: Context): Flow<Set<String>> =
         context.dataStore.data.map { it[KEY_SELECTED] ?: emptySet() }
@@ -35,6 +67,33 @@ object FavoritesRepository {
 
     suspend fun setPreferShizuku(context: Context, enabled: Boolean) {
         context.dataStore.edit { it[KEY_PREFER_SHIZUKU] = enabled }
+    }
+
+    fun gestureSettingsFlow(context: Context): Flow<GestureSettings> =
+        context.dataStore.data.map {
+            val d = GestureSettings()
+            GestureSettings(
+                tap = it[KEY_TAP] ?: d.tap,
+                doubleTap = it[KEY_DOUBLE_TAP] ?: d.doubleTap,
+                hold = it[KEY_HOLD] ?: d.hold,
+                haptics = it[KEY_HAPTICS] ?: d.haptics,
+            )
+        }
+
+    suspend fun setTapAction(context: Context, id: String) {
+        context.dataStore.edit { it[KEY_TAP] = id }
+    }
+
+    suspend fun setDoubleTapAction(context: Context, id: String) {
+        context.dataStore.edit { it[KEY_DOUBLE_TAP] = id }
+    }
+
+    suspend fun setHoldAction(context: Context, id: String) {
+        context.dataStore.edit { it[KEY_HOLD] = id }
+    }
+
+    suspend fun setGestureHaptics(context: Context, enabled: Boolean) {
+        context.dataStore.edit { it[KEY_HAPTICS] = enabled }
     }
 
     suspend fun setSelectedApps(context: Context, packages: Set<String>) {

@@ -9,6 +9,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -17,6 +19,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -28,12 +31,21 @@ import io.github.echu2237.sidebar.R
 import io.github.echu2237.sidebar.data.AppEntry
 import io.github.echu2237.sidebar.data.AppRepository
 import io.github.echu2237.sidebar.data.FavoritesRepository
+import io.github.echu2237.sidebar.data.GestureActions
+import io.github.echu2237.sidebar.data.GestureSettings
+import io.github.echu2237.sidebar.data.RecentAppsRepository
 import io.github.echu2237.sidebar.dp
 import io.github.echu2237.sidebar.freeform.FreeformLauncher
 import io.github.echu2237.sidebar.overlay.EdgeTriggerView
 import io.github.echu2237.sidebar.overlay.PanelView
+import io.github.echu2237.sidebar.overlay.RecentBarView
 import io.github.echu2237.sidebar.shizuku.ShizukuManager
 import io.github.echu2237.sidebar.util.SbLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service: owns two overlay windows, the right-edge trigger strip and the sidebar panel.
@@ -65,6 +77,17 @@ class SidebarService : Service() {
     private var lastDragFraction = 0f
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Gesture settings, kept up to date from DataStore so touch handling never blocks on disk
+    @Volatile private var gestures = GestureSettings()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var recentBar: RecentBarView? = null
+    @Volatile private var torchOn = false
+    private val torchCallback = object : CameraManager.TorchCallback() {
+        override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+            torchOn = enabled
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         if (!Settings.canDrawOverlays(this)) {
@@ -74,6 +97,12 @@ class SidebarService : Service() {
         }
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         isRunning = true
+        scope.launch {
+            FavoritesRepository.gestureSettingsFlow(this@SidebarService).collect { gestures = it }
+        }
+        runCatching {
+            (getSystemService(Context.CAMERA_SERVICE) as CameraManager).registerTorchCallback(torchCallback, mainHandler)
+        }
         startAsForeground()
         showTrigger()
         // When Shizuku is already authorized, pre-bind the shell service so the first floating-window launch is instant
@@ -92,6 +121,10 @@ class SidebarService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        scope.cancel()
+        runCatching {
+            (getSystemService(Context.CAMERA_SERVICE) as CameraManager).unregisterTorchCallback(torchCallback)
+        }
         removeAllViews()
         // Unbind the Shizuku UserService: otherwise every service lifecycle leaves behind a resident
         // io.github.echu2237.sidebar:sidebar_shell process (measured to accumulate, about 100MB+ RSS each)
@@ -108,7 +141,17 @@ class SidebarService : Service() {
         val trigger = EdgeTriggerView(
             context = this,
             panelWidthPx = dp(96f), // matches the panel width (drag progress is computed from it)
-            onTap = { openPanel() },
+            onTap = { performGesture(gestures.tap) },
+            onDoubleTap = {
+                feedback()
+                performGesture(gestures.doubleTap)
+            },
+            onHold = {
+                feedback()
+                performGesture(gestures.hold)
+            },
+            isDoubleTapEnabled = { gestures.doubleTap != GestureActions.NONE },
+            isHoldEnabled = { gestures.hold != GestureActions.NONE },
             onDragStart = { beginPanelPreview() },
             onDragProgress = { fraction -> updatePanelPreview(fraction) },
             onDragSettle = { open -> settlePanelPreview(open) },
@@ -129,6 +172,106 @@ class SidebarService : Service() {
         }
         windowManager.addView(trigger, params)
         triggerView = trigger
+    }
+
+    // ---------- Gestures ----------
+
+    private fun feedback() {
+        if (gestures.haptics) {
+            triggerView?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
+
+    private fun performGesture(action: String) {
+        when (action) {
+            GestureActions.PANEL -> openPanel()
+            GestureActions.RECENTS -> showRecentBar()
+            GestureActions.FLASHLIGHT -> toggleFlashlight()
+            GestureActions.SETTINGS -> {
+                val intent = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { startActivity(intent) }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun toggleFlashlight() {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val id = cm.cameraIdList.firstOrNull {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+            if (id == null) {
+                Toast.makeText(this, getString(R.string.toast_no_flashlight), Toast.LENGTH_SHORT).show()
+                return
+            }
+            cm.setTorchMode(id, !torchOn)
+        } catch (e: Exception) {
+            SbLog.e("toggle flashlight failed", e)
+        }
+    }
+
+    // ---------- Recent apps bar ----------
+
+    private fun showRecentBar() {
+        if (recentBar != null) return
+        if (!RecentAppsRepository.hasUsageAccess(this)) {
+            Toast.makeText(this, getString(R.string.toast_need_usage_access), Toast.LENGTH_LONG).show()
+            val intent = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { startActivity(intent) }
+            return
+        }
+        Thread {
+            val apps = runCatching { RecentAppsRepository.load(this, 8) }.getOrDefault(emptyList())
+            mainHandler.post {
+                if (recentBar != null) return@post
+                if (apps.isEmpty()) {
+                    Toast.makeText(this, getString(R.string.toast_no_recent_apps), Toast.LENGTH_SHORT).show()
+                    return@post
+                }
+                addRecentBar(apps)
+            }
+        }.start()
+    }
+
+    private fun addRecentBar(apps: List<AppEntry>) {
+        // The bar and the panel do not share the screen: close the panel first
+        if (panelView != null) hidePanel()
+        val bar = RecentBarView(
+            this,
+            apps,
+            onAppClick = { app -> dismissRecentBar { launchApp(app) } },
+            onDismiss = { dismissRecentBar() },
+        )
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dp(48f)
+            windowAnimations = 0
+        }
+        try {
+            windowManager.addView(bar, params)
+            recentBar = bar
+            bar.animateIn()
+        } catch (e: Exception) {
+            SbLog.e("add recent bar failed", e)
+        }
+    }
+
+    private fun dismissRecentBar(then: (() -> Unit)? = null) {
+        val bar = recentBar ?: run { then?.invoke(); return }
+        recentBar = null
+        bar.animateOut {
+            safelyRemoveView(bar)
+            then?.invoke()
+        }
     }
 
     // ---------- Finger-following drag preview ----------
@@ -359,6 +502,8 @@ class SidebarService : Service() {
         panelAnimator = null
         triggerView?.let { safelyRemoveView(it) }
         triggerView = null
+        recentBar?.let { safelyRemoveView(it) }
+        recentBar = null
         panelView?.let { safelyRemoveView(it) }
         panelView = null
         closingPanel?.let { safelyRemoveView(it) }

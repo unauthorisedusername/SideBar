@@ -6,6 +6,8 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -16,7 +18,9 @@ import kotlin.math.abs
  * Right-edge trigger strip: summons the sidebar.
  *
  * Interaction (matches the feel of the native MIUI sidebar):
- * - Tap            -> [onTap] expands directly
+ * - Tap            -> [onTap]
+ * - Double tap     -> [onDoubleTap] (only waited for when [isDoubleTapEnabled] is true, otherwise tap fires at once)
+ * - Hold           -> [onHold] (only when [isHoldEnabled] is true)
  * - Drag left      -> panel follows the finger as a preview [onDragProgress]; on release, progress decides expand/collapse [onDragSettle]
  *
  * Visuals: two-tone handle — dark outer stroke + light inner core.
@@ -29,6 +33,10 @@ class EdgeTriggerView(
     context: Context,
     private val panelWidthPx: Int,
     private val onTap: () -> Unit,
+    private val onDoubleTap: () -> Unit,
+    private val onHold: () -> Unit,
+    private val isDoubleTapEnabled: () -> Boolean,
+    private val isHoldEnabled: () -> Boolean,
     private val onDragStart: () -> Unit,
     private val onDragProgress: (Float) -> Unit,
     private val onDragSettle: (Boolean) -> Unit,
@@ -57,6 +65,28 @@ class EdgeTriggerView(
     private var dragging = false
     private var lastFraction = 0f
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    private val gestureHandler = Handler(Looper.getMainLooper())
+    private var holdFired = false
+    private var secondTap = false
+    private var pendingTap: Runnable? = null
+    private val holdRunnable = Runnable {
+        holdFired = true
+        onHold()
+    }
+
+    private fun cancelHold() = gestureHandler.removeCallbacks(holdRunnable)
+
+    private fun cancelPendingTap() {
+        pendingTap?.let { gestureHandler.removeCallbacks(it) }
+        pendingTap = null
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelHold()
+        cancelPendingTap()
+        super.onDetachedFromWindow()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -114,12 +144,24 @@ class EdgeTriggerView(
                 downY = event.rawY
                 dragging = false
                 lastFraction = 0f
+                holdFired = false
+                // A tap is waiting for a possible second tap: this touch is that second tap
+                secondTap = pendingTap != null
+                cancelPendingTap()
+                if (isHoldEnabled()) {
+                    gestureHandler.postDelayed(holdRunnable, ViewConfiguration.getLongPressTimeout().toLong())
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (abs(event.rawX - downX) > touchSlop || abs(event.rawY - downY) > touchSlop) {
+                    cancelHold()
+                }
+                if (holdFired) return true
                 val dx = downX - event.rawX
                 if (!dragging && dx > touchSlop) {
                     dragging = true
+                    secondTap = false
                     onDragStart()
                 }
                 if (dragging) {
@@ -128,19 +170,41 @@ class EdgeTriggerView(
                 }
             }
             MotionEvent.ACTION_UP -> {
+                cancelHold()
+                if (holdFired) {
+                    holdFired = false
+                    secondTap = false
+                    return true
+                }
                 if (dragging) {
                     // Release: expand if dragged past 30%, otherwise snap back and collapse
                     onDragSettle(lastFraction >= 0.30f)
                 } else if (abs(event.rawX - downX) < touchSlop &&
                     abs(event.rawY - downY) < touchSlop
                 ) {
-                    onTap()
+                    when {
+                        secondTap -> onDoubleTap()
+                        !isDoubleTapEnabled() -> onTap()
+                        else -> {
+                            // Wait briefly to see whether a second tap follows
+                            val r = Runnable {
+                                pendingTap = null
+                                onTap()
+                            }
+                            pendingTap = r
+                            gestureHandler.postDelayed(r, ViewConfiguration.getDoubleTapTimeout().toLong())
+                        }
+                    }
                 }
+                secondTap = false
                 dragging = false
             }
             MotionEvent.ACTION_CANCEL -> {
+                cancelHold()
                 if (dragging) onDragSettle(false)
                 dragging = false
+                holdFired = false
+                secondTap = false
             }
         }
         return true
