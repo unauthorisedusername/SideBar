@@ -51,6 +51,7 @@ import androidx.core.graphics.drawable.toBitmap
 import io.github.echu2237.sidebar.data.AppEntry
 import io.github.echu2237.sidebar.data.AppRepository
 import io.github.echu2237.sidebar.data.FavoritesRepository
+import io.github.echu2237.sidebar.freeform.FreeformLauncher
 import io.github.echu2237.sidebar.service.SidebarService
 import io.github.echu2237.sidebar.shizuku.ShizukuManager
 import io.github.echu2237.sidebar.ui.AkButton
@@ -72,6 +73,7 @@ class MainActivity : ComponentActivity() {
 
     internal val hasOverlayPermission = mutableStateOf(false)
     internal val serviceRunning = mutableStateOf(false)
+    internal val freeformState = mutableStateOf(Pair(false, false)) // freeform windows on, force-resizable on
     internal val shizukuState = mutableStateOf(Triple(false, false, false)) // installed, active, granted
 
     private val permissionListener =
@@ -119,6 +121,10 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun refreshShizukuState() {
+        freeformState.value = Pair(
+            FreeformLauncher.isFreeformSettingOn(this),
+            FreeformLauncher.isForceResizableOn(this),
+        )
         shizukuState.value = Triple(
             ShizukuManager.isShizukuInstalled,
             ShizukuManager.isShizukuActive,
@@ -150,6 +156,9 @@ fun MainScreen(onManageApps: () -> Unit) {
     val hasOverlayPermission = activity?.hasOverlayPermission?.value ?: false
     val serviceRunning = activity?.serviceRunning?.value ?: false
     val shizuku = activity?.shizukuState?.value ?: Triple(false, false, false)
+    val (freeformOn, forceResizable) = activity?.freeformState?.value ?: Pair(false, false)
+    val preferShizuku by remember { FavoritesRepository.preferShizukuFlow(context) }
+        .collectAsState(initial = false)
 
     val autostart by remember { FavoritesRepository.autostartEnabledFlow(context) }
         .collectAsState(initial = true)
@@ -222,10 +231,39 @@ fun MainScreen(onManageApps: () -> Unit) {
         }
 
         // 03 Floating window mode
-        AkPanel("03", "FREEFORM / SHIZUKU") {
+        AkPanel("03", "FREEFORM WINDOWS") {
+            AkStatusRow(
+                "Freeform windows (system)",
+                if (freeformOn) "On" else "Off",
+                if (freeformOn) AkColors.Ok else AkColors.Warn,
+            )
+            AkStatusRow(
+                "Force resizable apps",
+                if (forceResizable) "On" else "Off",
+                if (forceResizable) AkColors.Ok else AkColors.TextDim,
+            )
+            if (!freeformOn || !forceResizable) {
+                AkText(
+                    "No Shizuku needed: open Developer options and turn on \"Enable freeform windows\" " +
+                        "(and \"Force activities to be resizable\" so every app can float). Then tap an icon in the sidebar.",
+                    color = if (freeformOn) AkColors.TextDim else AkColors.Warn,
+                    size = 10,
+                )
+                AkButton("Open developer options", primary = !freeformOn) {
+                    FreeformLauncher.openDeveloperOptions(context)
+                }
+            } else {
+                AkText(
+                    "Ready — tapping a sidebar icon opens the app in a floating window. Falls back to fullscreen on failure.",
+                    color = AkColors.Ok,
+                    size = 10,
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
             val (installed, active, granted) = shizuku
             AkStatusRow(
-                "SHIZUKU",
+                "SHIZUKU (optional fallback)",
                 when {
                     !installed -> "Not installed"
                     !active -> "Not active"
@@ -233,40 +271,39 @@ fun MainScreen(onManageApps: () -> Unit) {
                     else -> "Ready"
                 },
                 when {
-                    !installed -> AkColors.Danger
+                    !installed -> AkColors.TextDim
                     !active -> AkColors.Warn
                     !granted -> AkColors.Warn
                     else -> AkColors.Ok
                 },
             )
-            AkStatusRow(
-                "Floating window launch",
-                if (granted) "Enabled" else "Fullscreen fallback",
-                if (granted) AkColors.Ok else AkColors.TextDim,
-            )
-            when {
-                !installed -> AkText(
-                    "After installing and activating Shizuku, tapping a sidebar icon opens the app in a floating window",
-                    color = AkColors.TextDim,
-                    size = 10,
-                )
-                !active -> AkText(
-                    "Shizuku is not active: open the Shizuku app and activate it via \"Wireless debugging\" or a computer connection",
-                    color = AkColors.Warn,
-                    size = 10,
-                )
-                !granted -> AkButton("AUTHORIZE SHIZUKU", primary = true) {
+            if (installed && active && !granted) {
+                AkButton("AUTHORIZE SHIZUKU") {
                     try {
                         ShizukuManager.requestPermission(1)
                     } catch (_: Exception) {
                         activity?.refreshShizukuState()
                     }
                 }
-                else -> AkText(
-                    "Authorized — tap an icon to open it in a floating window; falls back to fullscreen on failure",
-                    color = AkColors.Ok,
-                    size = 10,
-                )
+            }
+            if (granted) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        AkText("Prefer Shizuku", size = 12)
+                        Spacer(Modifier.height(2.dp))
+                        AkText(
+                            "Use Shizuku before the direct method. Turn on if the direct method opens apps fullscreen.",
+                            color = AkColors.TextDim,
+                            size = 10,
+                        )
+                    }
+                    AkSwitch(checked = preferShizuku) { checked ->
+                        scope.launch { FavoritesRepository.setPreferShizuku(context, checked) }
+                    }
+                }
             }
         }
 

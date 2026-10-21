@@ -8,6 +8,8 @@
     <string name="toast_launch_failed">Unable to launch %1$s</string>
     <string name="toast_shizuku_missing">Shizuku is not installed; launched fullscreen (install Shizuku to enable floating windows)</string>
     <string name="toast_shizuku_inactive">Shizuku is not active; launched fullscreen (activate it to open in a floating window)</string>
+    <string name="toast_freeform_unavailable">Floating window could not be opened; launched fullscreen. Turn on \"Enable freeform windows\" in Developer options.</string>
+    <string name="toast_freeform_setting_off">Freeform windows are off in Developer options, so the app may open fullscreen. Open the Sidebar app to fix this.</string>
     <string name="battery_optimization">Battery optimization whitelist (keeps the system from killing the sidebar)</string>
     <string name="notif_channel_name">Sidebar service</string>
     <string name="notif_title">Sidebar is running</string>

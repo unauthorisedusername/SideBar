@@ -29,6 +29,7 @@ import io.github.echu2237.sidebar.data.AppEntry
 import io.github.echu2237.sidebar.data.AppRepository
 import io.github.echu2237.sidebar.data.FavoritesRepository
 import io.github.echu2237.sidebar.dp
+import io.github.echu2237.sidebar.freeform.FreeformLauncher
 import io.github.echu2237.sidebar.overlay.EdgeTriggerView
 import io.github.echu2237.sidebar.overlay.PanelView
 import io.github.echu2237.sidebar.shizuku.ShizukuManager
@@ -389,13 +390,8 @@ class SidebarService : Service() {
                     // Hint once when floating windows are unavailable (avoid bothering on every tap)
                     if (!freeformUnavailableNotified) {
                         freeformUnavailableNotified = true
-                        val hint = if (!ShizukuManager.isShizukuInstalled) {
-                            R.string.toast_shizuku_missing
-                        } else {
-                            R.string.toast_shizuku_inactive
-                        }
                         mainHandler.post {
-                            Toast.makeText(this, getString(hint), Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, getString(R.string.toast_freeform_unavailable), Toast.LENGTH_LONG).show()
                         }
                     }
                     if (intent != null) {
@@ -417,17 +413,39 @@ class SidebarService : Service() {
     }
 
     /**
-     * Launch in a freeform floating window via Shizuku (shell identity).
-     * Stage 3 testing: am start --windowingMode 5 can pull other apps into mode=freeform on this device (HyperOS3/Android16).
-     * Returns false on failure or when not authorized, falling back to a normal launch.
+     * Launch in a freeform floating window.
+     * 1) Direct method (no Shizuku): hidden ActivityOptions windowing mode, see [FreeformLauncher].
+     *    Used when the system freeform switch is on.
+     * 2) Shizuku (shell identity, am start --windowingMode 5): used first if the user prefers it,
+     *    or when the system freeform switch is off and Shizuku is authorized.
+     * Returns false only if every method failed, so the caller falls back to a normal launch.
      */
     private fun tryFreeformLaunch(app: AppEntry): Boolean {
-        if (!ShizukuManager.isPermissionGranted) return false
+        val shizukuReady = ShizukuManager.isPermissionGranted
+        val freeformOn = FreeformLauncher.isFreeformSettingOn(this)
+        val preferShizuku = FavoritesRepository.preferShizukuBlocking(this)
+
+        if (shizukuReady && (preferShizuku || !freeformOn) && launchViaShizuku(app)) return true
+
+        if (FreeformLauncher.launch(this, app.packageName, app.activityName)) {
+            if (!freeformOn && !shizukuReady && !freeformUnavailableNotified) {
+                // The system will most likely open the app fullscreen: tell the user why, once
+                freeformUnavailableNotified = true
+                mainHandler.post {
+                    Toast.makeText(this, getString(R.string.toast_freeform_setting_off), Toast.LENGTH_LONG).show()
+                }
+            }
+            return true
+        }
+        return false
+    }
+
+    private fun launchViaShizuku(app: AppEntry): Boolean {
         val cmd = ShizukuManager.freeformStartCommand(app.packageName, app.activityName)
         val result = ShizukuManager.exec(cmd)
-        SbLog.d("freeform launch -> $result")
+        SbLog.d("freeform launch (shizuku) -> $result")
         if (result == null) {
-            // Shell service lost (possibly reclaimed by the system): re-bind, and fall back to fullscreen launch this time
+            // Shell service lost (possibly reclaimed by the system): re-bind, then try the other method
             runCatching { ShizukuManager.bindShell(this) }
             return false
         }

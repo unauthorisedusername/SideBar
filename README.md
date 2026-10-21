@@ -1,6 +1,6 @@
 # Sidebar for HyperOS / MIUI
 
-A third-party, **root-free** side panel for Xiaomi tablets running HyperOS / MIUI — inspired by MIUI's native sidebar, but with one addition: apps open in a **real freeform (floating window)** via [Shizuku](https://shizuku.rikka.app/).
+A third-party, **root-free** side panel for Xiaomi tablets running HyperOS / MIUI — inspired by MIUI's native sidebar, but with one addition: apps open in a **real freeform (floating window)**. This works without Shizuku once "Enable freeform windows" is on in Developer options; [Shizuku](https://shizuku.rikka.app/) is an optional fallback.
 
 > Chinese README: [README.zh-CN.md](README.zh-CN.md)
 
