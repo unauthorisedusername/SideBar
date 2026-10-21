@@ -30,10 +30,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -276,6 +279,35 @@ fun MainScreen(onManageApps: () -> Unit) {
             }
             val usesRecents = GestureActions.RECENTS in listOf(gestures.tap, gestures.doubleTap, gestures.hold)
             if (usesRecents) {
+                AkSelectRow(
+                    "Recent bar style",
+                    if (gestures.recentVertical) "Vertical" else "Horizontal",
+                    options = listOf("horizontal" to "Horizontal", "vertical" to "Vertical"),
+                ) { id ->
+                    scope.launch { FavoritesRepository.setRecentVertical(context, id == "vertical") }
+                }
+                if (!gestures.recentVertical) {
+                    var heightDp by remember(gestures.recentHeightDp) {
+                        mutableFloatStateOf(gestures.recentHeightDp.toFloat())
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        AkText("Bar height from bottom", size = 12, modifier = Modifier.weight(1f))
+                        AkText("${heightDp.toInt()} dp", size = 12, color = AkColors.Accent)
+                    }
+                    Slider(
+                        value = heightDp,
+                        onValueChange = { heightDp = it },
+                        onValueChangeFinished = {
+                            scope.launch { FavoritesRepository.setRecentHeightDp(context, heightDp.toInt()) }
+                        },
+                        valueRange = 0f..500f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = AkColors.Accent,
+                            activeTrackColor = AkColors.Accent,
+                            inactiveTrackColor = AkColors.Line,
+                        ),
+                    )
+                }
                 AkStatusRow(
                     "Usage access (recent apps)",
                     if (usageAccess) "Granted" else "Not granted",
@@ -436,7 +468,12 @@ fun MainScreen(onManageApps: () -> Unit) {
 
 /** Label on the left, current choice on the right; tapping it opens a dropdown of [GestureActions.all] */
 @Composable
-private fun AkSelectRow(label: String, value: String, onSelect: (String) -> Unit) {
+private fun AkSelectRow(
+    label: String,
+    value: String,
+    options: List<Pair<String, String>> = GestureActions.all,
+    onSelect: (String) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         AkText(label, size = 12, modifier = Modifier.weight(1f))
@@ -457,7 +494,7 @@ private fun AkSelectRow(label: String, value: String, onSelect: (String) -> Unit
                 onDismissRequest = { open = false },
                 containerColor = AkColors.PanelAlt,
             ) {
-                GestureActions.all.forEach { (id, text) ->
+                options.forEach { (id, text) ->
                     DropdownMenuItem(
                         text = { AkText(text, size = 13) },
                         onClick = {

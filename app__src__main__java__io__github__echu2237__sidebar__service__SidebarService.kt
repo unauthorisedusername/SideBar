@@ -105,6 +105,7 @@ class SidebarService : Service() {
         }
         startAsForeground()
         showTrigger()
+        Thread { RecentAppsRepository.prewarm(this) }.start()
         // When Shizuku is already authorized, pre-bind the shell service so the first floating-window launch is instant
         if (ShizukuManager.isPermissionGranted) {
             Thread { ShizukuManager.bindShell(this) }.start()
@@ -237,9 +238,11 @@ class SidebarService : Service() {
     private fun addRecentBar(apps: List<AppEntry>) {
         // The bar and the panel do not share the screen: close the panel first
         if (panelView != null) hidePanel()
+        val g = gestures
         val bar = RecentBarView(
             this,
             apps,
+            vertical = g.recentVertical,
             onAppClick = { app -> dismissRecentBar { launchApp(app) } },
             onDismiss = { dismissRecentBar() },
         )
@@ -252,8 +255,13 @@ class SidebarService : Service() {
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = dp(48f)
+            if (g.recentVertical) {
+                gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                x = dp(16f) // just inside the edge handle
+            } else {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                y = dp(g.recentHeightDp.toFloat())
+            }
             windowAnimations = 0
         }
         try {

@@ -1,27 +1,35 @@
 package io.github.echu2237.sidebar.overlay
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import io.github.echu2237.sidebar.data.AppEntry
 import io.github.echu2237.sidebar.dp
 
 /**
- * Horizontal bar of recently used app icons, shown at the bottom of the screen.
+ * Bar of recently used app icons. Horizontal (bottom of the screen) or vertical (at the right edge).
  * Tap an icon -> [onAppClick]; tap anywhere outside the bar -> [onDismiss].
  */
 class RecentBarView(
     context: Context,
     apps: List<AppEntry>,
+    private val vertical: Boolean,
     private val onAppClick: (AppEntry) -> Unit,
     private val onDismiss: () -> Unit,
 ) : FrameLayout(context) {
+
+    private var blinkAnimator: ObjectAnimator? = null
 
     init {
         background = GradientDrawable().apply {
@@ -30,8 +38,8 @@ class RecentBarView(
             setStroke(dp(1f), 0x44FFFFFF)
         }
         val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (vertical) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
             setPadding(dp(10f), dp(10f), dp(10f), dp(10f))
         }
         for (app in apps) {
@@ -43,31 +51,61 @@ class RecentBarView(
             row.addView(
                 icon,
                 LinearLayout.LayoutParams(dp(52f), dp(52f)).apply {
-                    marginStart = dp(5f)
-                    marginEnd = dp(5f)
+                    if (vertical) {
+                        topMargin = dp(5f)
+                        bottomMargin = dp(5f)
+                    } else {
+                        marginStart = dp(5f)
+                        marginEnd = dp(5f)
+                    }
                 },
             )
         }
-        val scroll = HorizontalScrollView(context).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = OVER_SCROLL_NEVER
-            addView(row)
+        val scroller = if (vertical) {
+            ScrollView(context).apply {
+                isVerticalScrollBarEnabled = false
+                overScrollMode = OVER_SCROLL_NEVER
+                addView(row)
+            }
+        } else {
+            HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = OVER_SCROLL_NEVER
+                addView(row)
+            }
         }
         addView(
-            scroll,
+            scroller,
             LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
     }
 
+    /** Fast open */
     fun animateIn() {
         alpha = 0f
-        translationY = dp(40f).toFloat()
-        animate().alpha(1f).translationY(0f).setDuration(180L).start()
+        if (vertical) translationX = dp(30f).toFloat() else translationY = dp(30f).toFloat()
+        animate().alpha(1f).translationX(0f).translationY(0f).setDuration(90L).start()
     }
 
+    /** Close: a very short blink, then disappear */
     fun animateOut(onEnd: () -> Unit) {
-        animate().alpha(0f).translationY(dp(40f).toFloat()).setDuration(140L)
-            .withEndAction(onEnd).start()
+        animate().cancel()
+        blinkAnimator?.cancel()
+        blinkAnimator = ObjectAnimator.ofFloat(this, ALPHA, 1f, 0.2f, 0.9f, 0.15f, 0.7f, 0f).apply {
+            duration = 240L
+            interpolator = LinearInterpolator()
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: Animator) {
+                    if (!cancelled) onEnd()
+                }
+            })
+            start()
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

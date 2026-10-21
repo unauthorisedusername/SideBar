@@ -3,6 +3,7 @@ package io.github.echu2237.sidebar.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -38,6 +39,8 @@ data class GestureSettings(
     val doubleTap: String = GestureActions.RECENTS,
     val hold: String = GestureActions.NONE,
     val haptics: Boolean = true,
+    val recentVertical: Boolean = false,
+    val recentHeightDp: Int = 48,
 )
 
 /**
@@ -54,6 +57,8 @@ object FavoritesRepository {
     private val KEY_DOUBLE_TAP = stringPreferencesKey("gesture_double_tap")
     private val KEY_HOLD = stringPreferencesKey("gesture_hold")
     private val KEY_HAPTICS = booleanPreferencesKey("gesture_haptics")
+    private val KEY_RECENT_VERTICAL = booleanPreferencesKey("recent_vertical")
+    private val KEY_RECENT_HEIGHT = intPreferencesKey("recent_height_dp")
 
     fun selectedAppsFlow(context: Context): Flow<Set<String>> =
         context.dataStore.data.map { it[KEY_SELECTED] ?: emptySet() }
@@ -77,6 +82,8 @@ object FavoritesRepository {
                 doubleTap = it[KEY_DOUBLE_TAP] ?: d.doubleTap,
                 hold = it[KEY_HOLD] ?: d.hold,
                 haptics = it[KEY_HAPTICS] ?: d.haptics,
+                recentVertical = it[KEY_RECENT_VERTICAL] ?: d.recentVertical,
+                recentHeightDp = it[KEY_RECENT_HEIGHT] ?: d.recentHeightDp,
             )
         }
 
@@ -94,6 +101,14 @@ object FavoritesRepository {
 
     suspend fun setGestureHaptics(context: Context, enabled: Boolean) {
         context.dataStore.edit { it[KEY_HAPTICS] = enabled }
+    }
+
+    suspend fun setRecentVertical(context: Context, vertical: Boolean) {
+        context.dataStore.edit { it[KEY_RECENT_VERTICAL] = vertical }
+    }
+
+    suspend fun setRecentHeightDp(context: Context, dp: Int) {
+        context.dataStore.edit { it[KEY_RECENT_HEIGHT] = dp }
     }
 
     suspend fun setSelectedApps(context: Context, packages: Set<String>) {

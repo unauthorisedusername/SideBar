@@ -14,6 +14,23 @@ import android.os.Process
  */
 object RecentAppsRepository {
 
+    @Volatile private var cachedLaunchable: Map<String, AppEntry>? = null
+    @Volatile private var cachedAt = 0L
+
+    private fun launchable(context: Context): Map<String, AppEntry> {
+        val now = System.currentTimeMillis()
+        cachedLaunchable?.let { if (now - cachedAt < 120_000L) return it }
+        val m = AppRepository.loadLaunchableApps(context).associateBy { it.packageName }
+        cachedLaunchable = m
+        cachedAt = now
+        return m
+    }
+
+    /** Warm the cache so the first bar opens instantly. Call off the main thread. */
+    fun prewarm(context: Context) {
+        runCatching { launchable(context) }
+    }
+
     fun hasUsageAccess(context: Context): Boolean {
         val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = ops.unsafeCheckOpNoThrow(
@@ -26,9 +43,30 @@ object RecentAppsRepository {
 
     /** Most recently used launchable apps first (home screen and this app excluded). Call off the main thread. */
     fun load(context: Context, limit: Int): List<AppEntry> {
+        val homePackage = context.packageManager
+            .resolveActivity(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+                PackageManager.MATCH_DEFAULT_ONLY,
+            )?.activityInfo?.packageName
+        val launchable = launchable(context)
+        // Short window first (fast); widen only if there are not enough apps
+        var result = query(context, 12L * 60 * 60 * 1000, launchable, homePackage, limit)
+        if (result.size < limit) {
+            result = query(context, 3L * 24 * 60 * 60 * 1000, launchable, homePackage, limit)
+        }
+        return result
+    }
+
+    private fun query(
+        context: Context,
+        windowMs: Long,
+        launchable: Map<String, AppEntry>,
+        homePackage: String?,
+        limit: Int,
+    ): List<AppEntry> {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
-        val events = usm.queryEvents(now - 3L * 24 * 60 * 60 * 1000, now)
+        val events = usm.queryEvents(now - windowMs, now)
         val lastUsed = HashMap<String, Long>()
         val e = UsageEvents.Event()
         while (events.hasNextEvent()) {
@@ -37,12 +75,6 @@ object RecentAppsRepository {
                 lastUsed[e.packageName] = e.timeStamp
             }
         }
-        val homePackage = context.packageManager
-            .resolveActivity(
-                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
-                PackageManager.MATCH_DEFAULT_ONLY,
-            )?.activityInfo?.packageName
-        val launchable = AppRepository.loadLaunchableApps(context).associateBy { it.packageName }
         return lastUsed.entries
             .sortedByDescending { it.value }
             .mapNotNull { launchable[it.key] }
