@@ -1,0 +1,551 @@
+package net.timelegend.chaka.viewer;
+
+import com.artifex.mupdf.fitz.SeekableInputStream;
+
+import android.app.AlertDialog;
+import android.content.ContentResolver;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Bundle;
+import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ArrayAdapter;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.TextView;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * The only screen: shows a button to pick a PDF (and opens the picker
+ * automatically), or opens a PDF handed over by another app.
+ */
+public class DocumentActivity extends AppCompatActivity
+{
+	private static final String PDF_MIME = "application/pdf";
+
+	private MuPDFCore core;
+	private ReaderView docView;
+	private EditText passwordView;
+	private ActivityResultLauncher<String[]> picker;
+	private boolean pickerShown = false;
+
+	private Uri currentUri;
+	private String currentName;
+	private boolean external = false;           // opened by another app (Back should exit)
+	private ArrayList<MuPDFCore.OutlineItem> outline;
+	private TextView pageIndicator;
+	private TextView contentsButton;
+	private OnBackPressedCallback docBackCallback;
+
+	@Override
+	public void onCreate(final Bundle savedInstanceState)
+	{
+		super.onCreate(savedInstanceState);
+		Tool.create(this);
+
+		picker = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+			if (uri != null) {
+				keepAccess(uri);
+				openUri(uri);
+			}
+		});
+
+		// Back from a document returns to the start screen / recent files
+		docBackCallback = new OnBackPressedCallback(false) {
+			@Override
+			public void handleOnBackPressed() {
+				rememberPosition();
+				closeCore();
+				showStartScreen();
+			}
+		};
+		getOnBackPressedDispatcher().addCallback(this, docBackCallback);
+
+		showStartScreen();
+
+		Intent intent = getIntent();
+		if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+			external = true;
+			keepAccess(intent.getData());
+			openUri(intent.getData());
+		}
+		else if (savedInstanceState == null && RecentFiles.load(this).isEmpty()) {
+			pickerShown = true;
+			picker.launch(new String[] { PDF_MIME });
+		}
+	}
+
+	/** Ask for long-term read access so the file can be reopened from recent files. */
+	private void keepAccess(Uri uri) {
+		try {
+			getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+		} catch (Exception x) {
+			// not every provider offers persistable grants; ignore
+		}
+	}
+
+	private int dp(int v) {
+		return Math.round(v * getResources().getDisplayMetrics().density);
+	}
+
+	private void showStartScreen() {
+		LinearLayout root = new LinearLayout(this);
+		root.setOrientation(LinearLayout.VERTICAL);
+		ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+			Insets b = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+			v.setPadding(b.left, b.top, b.right, b.bottom);
+			return insets;
+		});
+
+		final List<RecentFiles.Entry> recent = RecentFiles.load(this);
+
+		Button open = new Button(this);
+		open.setText(R.string.open_pdf);
+		open.setOnClickListener(v -> picker.launch(new String[] { PDF_MIME }));
+		LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+				ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+		if (recent.isEmpty()) {
+			blp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+			blp.gravity = Gravity.CENTER;
+			blp.topMargin = dp(0);
+			root.setGravity(Gravity.CENTER);
+		} else {
+			blp.gravity = Gravity.CENTER_HORIZONTAL;
+			blp.topMargin = dp(16);
+		}
+		root.addView(open, blp);
+
+		if (!recent.isEmpty()) {
+			TextView header = new TextView(this);
+			header.setText(R.string.recent_files);
+			header.setTextSize(14);
+			header.setTextColor(0xFF3CB371);
+			header.setPadding(dp(20), dp(20), dp(20), dp(8));
+			root.addView(header);
+
+			ListView list = new ListView(this);
+			list.setAdapter(new ArrayAdapter<RecentFiles.Entry>(this, 0, recent) {
+				@Override
+				public View getView(int position, View convertView, ViewGroup parent) {
+					RecentFiles.Entry e = getItem(position);
+					LinearLayout row = new LinearLayout(DocumentActivity.this);
+					row.setOrientation(LinearLayout.VERTICAL);
+					row.setPadding(dp(20), dp(12), dp(20), dp(12));
+					TextView name = new TextView(DocumentActivity.this);
+					name.setText(e.name);
+					name.setTextSize(16);
+					name.setSingleLine(true);
+					name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+					TextView sub = new TextView(DocumentActivity.this);
+					sub.setText(String.format(Locale.ROOT, getString(R.string.page_of),
+							e.page + 1, Math.max(e.pages, e.page + 1)));
+					sub.setTextSize(13);
+					sub.setTextColor(0xFF757575);
+					row.addView(name);
+					row.addView(sub);
+					return row;
+				}
+			});
+			list.setOnItemClickListener((p, v, pos, id) -> openUri(Uri.parse(recent.get(pos).uri)));
+			list.setOnItemLongClickListener((p, v, pos, id) -> {
+				final RecentFiles.Entry e = recent.get(pos);
+				new AlertDialog.Builder(this, R.style.MyDialog)
+						.setTitle(R.string.remove_recent)
+						.setMessage(e.name)
+						.setPositiveButton(R.string.remove, (d, w) -> {
+							RecentFiles.remove(this, e.uri);
+							showStartScreen();
+						})
+						.setNegativeButton(R.string.cancel, null)
+						.show();
+				return true;
+			});
+			root.addView(list, new LinearLayout.LayoutParams(
+					ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+		}
+		setContentView(root);
+	}
+
+	private void closeCore() {
+		docBackCallback.setEnabled(false);
+		outline = null;
+		pageIndicator = null;
+		contentsButton = null;
+		if (docView != null) {
+			docView.getBackCallback().remove();
+			docView = null;
+		}
+		if (core != null) {
+			core.onDestroy();
+			core = null;
+		}
+	}
+
+	private void openUri(Uri uri) {
+		rememberPosition();
+		closeCore();
+		currentUri = uri;
+		currentName = queryName(uri);
+		try {
+			core = openCore(uri);
+		}
+		catch (Throwable x) {
+			core = null;
+			// unreadable or gone: drop it from recent files
+			RecentFiles.remove(this, uri.toString());
+			showStartScreen();
+			showError(x.toString());
+			return;
+		}
+
+		if (core == null || core.needsPassword()) {
+			if (core == null)
+				showError(null);
+			else
+				requestPassword();
+			return;
+		}
+		showDocument();
+	}
+
+	private String queryName(Uri uri) {
+		try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+			if (c != null && c.moveToFirst()) {
+				int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+				if (idx >= 0) {
+					String n = c.getString(idx);
+					if (n != null && n.length() > 0)
+						return n;
+				}
+			}
+		} catch (Exception x) {
+			// fall through
+		}
+		String last = uri.getLastPathSegment();
+		return last != null ? last : uri.toString();
+	}
+
+	/** Save the page being read so it can be resumed later. */
+	private void rememberPosition() {
+		if (core != null && docView != null && currentUri != null)
+			RecentFiles.record(this, currentUri.toString(), currentName,
+					docView.getCurrentPage(), core.countPages());
+	}
+
+	private MuPDFCore openCore(Uri uri) throws IOException {
+		ContentResolver cr = getContentResolver();
+
+		long size = -1;
+		try (android.database.Cursor cursor = cr.query(uri, null, null, null, null)) {
+			if (cursor != null && cursor.moveToFirst()) {
+				int idx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+				if (idx >= 0 && cursor.getType(idx) == android.database.Cursor.FIELD_TYPE_INTEGER)
+					size = cursor.getLong(idx);
+				if (size == 0)
+					size = -1;
+			}
+		} catch (Exception x) {
+			// ignore, depend on default size
+		}
+
+		byte[] buf = null;
+		int used = -1;
+		InputStream is = cr.openInputStream(uri);
+		try {
+			final int limit = 8 * 1024 * 1024;
+			if (size < 0) { // size is unknown
+				buf = new byte[limit];
+				used = is.read(buf);
+				boolean atEOF = is.read() == -1;
+				if (used < 0 || (used == limit && !atEOF)) // no or partial data
+					buf = null;
+			} else if (size <= limit) { // size is known and below limit
+				buf = new byte[(int) size];
+				used = is.read(buf);
+				if (used < 0 || used < size) // no or partial data
+					buf = null;
+			}
+			if (buf != null && buf.length != used) {
+				byte[] newbuf = new byte[used];
+				System.arraycopy(buf, 0, newbuf, 0, used);
+				buf = newbuf;
+			}
+		} catch (OutOfMemoryError e) {
+			buf = null;
+		} finally {
+			is.close();
+		}
+
+		if (buf != null) {
+			Tool.i("Opening document from memory buffer of size " + buf.length);
+			return new MuPDFCore(buf, PDF_MIME);
+		} else {
+			Tool.i("Opening document from stream");
+			SeekableInputStream stm = new ContentInputStream(cr, uri, size);
+			return new MuPDFCore(stm, PDF_MIME);
+		}
+	}
+
+	private void showError(String reason) {
+		AlertDialog alert = new AlertDialog.Builder(this, R.style.MyDialog).create();
+		if (reason == null)
+			alert.setTitle(R.string.cannot_open_document);
+		else
+			alert.setTitle(String.format(Locale.ROOT, getString(R.string.cannot_open_document_Reason), reason));
+		alert.setButton(AlertDialog.BUTTON_POSITIVE, getString(R.string.dismiss),
+				new DialogInterface.OnClickListener() {
+					public void onClick(DialogInterface dialog, int which) {
+					}
+				});
+		alert.show();
+	}
+
+	private void requestPassword() {
+		passwordView = new EditText(this);
+		passwordView.setInputType(EditorInfo.TYPE_TEXT_VARIATION_PASSWORD);
+		passwordView.setTransformationMethod(new PasswordTransformationMethod());
+
+		AlertDialog alert = new AlertDialog.Builder(this, R.style.MyDialog).create();
+		alert.setTitle(R.string.enter_password);
+		alert.setView(passwordView);
+		alert.setButton(AlertDialog.BUTTON_POSITIVE, getString(R.string.okay),
+				new DialogInterface.OnClickListener() {
+					public void onClick(DialogInterface dialog, int which) {
+						if (core.authenticatePassword(passwordView.getText().toString())) {
+							showDocument();
+						} else {
+							requestPassword();
+						}
+					}
+				});
+		alert.setButton(AlertDialog.BUTTON_NEGATIVE, getString(R.string.cancel),
+				new DialogInterface.OnClickListener() {
+					public void onClick(DialogInterface dialog, int which) {
+						closeCore();
+					}
+				});
+		alert.show();
+	}
+
+	private void showDocument() {
+		if (core == null || core.countPages() <= 0) {
+			closeCore();
+			showError(null);
+			return;
+		}
+		final MuPDFCore c = core;
+		final int count = c.countPages();
+
+		// resume where the person left off
+		int start = 0;
+		RecentFiles.Entry saved = RecentFiles.find(this, currentUri.toString());
+		if (saved != null)
+			start = Math.min(Math.max(saved.page, 0), count - 1);
+
+		docView = new ReaderView(this);
+		docView.setAdapter(new PageAdapter(this, core));
+		if (start > 0)
+			docView.goToPage(start);
+		getOnBackPressedDispatcher().addCallback(this, docView.getBackCallback());
+		docBackCallback.setEnabled(!external);
+
+		final FrameLayout frame = new FrameLayout(this);
+		frame.addView(docView, new FrameLayout.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+		// page indicator ("12 / 240"); tap to jump to a page
+		pageIndicator = makeOverlay(14, 6);
+		pageIndicator.setText(String.format(Locale.ROOT, "%d / %d", start + 1, count));
+		pageIndicator.setOnClickListener(v -> showGoToDialog());
+		FrameLayout.LayoutParams ilp = new FrameLayout.LayoutParams(
+				ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+				Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+		ilp.bottomMargin = dp(12);
+		frame.addView(pageIndicator, ilp);
+
+		// table of contents button, shown only if the document has an outline
+		contentsButton = makeOverlay(18, 8);
+		contentsButton.setText("\u2630");
+		contentsButton.setVisibility(View.GONE);
+		contentsButton.setOnClickListener(v -> showOutlineDialog());
+		FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
+				ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+				Gravity.TOP | Gravity.END);
+		clp.topMargin = dp(12);
+		clp.rightMargin = dp(12);
+		frame.addView(contentsButton, clp);
+
+		ViewCompat.setOnApplyWindowInsetsListener(frame, (v, insets) -> {
+			Insets b = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+			if (pageIndicator != null) {
+				FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) pageIndicator.getLayoutParams();
+				lp.bottomMargin = b.bottom + dp(12);
+				pageIndicator.setLayoutParams(lp);
+			}
+			if (contentsButton != null) {
+				FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) contentsButton.getLayoutParams();
+				lp.topMargin = b.top + dp(12);
+				lp.rightMargin = b.right + dp(12);
+				contentsButton.setLayoutParams(lp);
+			}
+			return insets;
+		});
+
+		docView.setPageListener((page, total) -> {
+			if (pageIndicator != null)
+				pageIndicator.setText(String.format(Locale.ROOT, "%d / %d", page + 1, total));
+		});
+
+		setContentView(frame);
+		ViewCompat.requestApplyInsets(frame);
+
+		RecentFiles.record(this, currentUri.toString(), currentName, start, count);
+		loadOutlineAsync(c);
+	}
+
+	private TextView makeOverlay(int textSp, int padVdp) {
+		TextView t = new TextView(this);
+		t.setTextColor(Color.WHITE);
+		t.setTextSize(textSp);
+		t.setPadding(dp(14), dp(padVdp), dp(14), dp(padVdp));
+		GradientDrawable bg = new GradientDrawable();
+		bg.setColor(0xB3000000);
+		bg.setCornerRadius(dp(24));
+		t.setBackground(bg);
+		return t;
+	}
+
+	private void loadOutlineAsync(final MuPDFCore c) {
+		new Thread(() -> {
+			final ArrayList<MuPDFCore.OutlineItem> items = c.getOutline();
+			runOnUiThread(() -> {
+				if (core != c || contentsButton == null)
+					return;
+				outline = items;
+				if (!items.isEmpty())
+					contentsButton.setVisibility(View.VISIBLE);
+			});
+		}).start();
+	}
+
+	private void showGoToDialog() {
+		if (docView == null || core == null)
+			return;
+		final int count = core.countPages();
+		final EditText input = new EditText(this);
+		input.setInputType(InputType.TYPE_CLASS_NUMBER);
+		input.setSingleLine(true);
+		input.setImeOptions(EditorInfo.IME_ACTION_GO);
+		input.setHint(String.format(Locale.ROOT, getString(R.string.page_range_hint), count));
+		input.setText(String.valueOf(docView.getCurrentPage() + 1));
+		input.selectAll();
+
+		FrameLayout holder = new FrameLayout(this);
+		holder.setPadding(dp(24), dp(8), dp(24), 0);
+		holder.addView(input);
+
+		final AlertDialog dialog = new AlertDialog.Builder(this, R.style.MyDialog)
+				.setTitle(R.string.go_to_page)
+				.setView(holder)
+				.setPositiveButton(R.string.go, (d, w) -> {
+					try {
+						int n = Integer.parseInt(input.getText().toString().trim());
+						if (docView != null)
+							docView.goToPage(Math.min(Math.max(n, 1), count) - 1);
+					} catch (NumberFormatException x) {
+						// empty or invalid: stay where we are
+					}
+				})
+				.setNegativeButton(R.string.cancel, null)
+				.create();
+		input.setOnEditorActionListener((v, actionId, event) -> {
+			dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+			return true;
+		});
+		dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+		dialog.show();
+		input.requestFocus();
+	}
+
+	private void showOutlineDialog() {
+		if (outline == null || outline.isEmpty() || docView == null)
+			return;
+		final ArrayList<MuPDFCore.OutlineItem> items = outline;
+		ListView list = new ListView(this);
+		list.setAdapter(new ArrayAdapter<MuPDFCore.OutlineItem>(this, 0, items) {
+			@Override
+			public View getView(int position, View convertView, ViewGroup parent) {
+				MuPDFCore.OutlineItem it = getItem(position);
+				LinearLayout row = new LinearLayout(DocumentActivity.this);
+				row.setOrientation(LinearLayout.HORIZONTAL);
+				row.setGravity(Gravity.CENTER_VERTICAL);
+				row.setPadding(dp(20 + Math.min(it.level, 5) * 16), dp(12), dp(20), dp(12));
+				TextView title = new TextView(DocumentActivity.this);
+				title.setText(it.title);
+				title.setTextSize(15);
+				if (it.page < 0)
+					title.setTextColor(0xFF757575);
+				row.addView(title, new LinearLayout.LayoutParams(0,
+						ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+				if (it.page >= 0) {
+					TextView pg = new TextView(DocumentActivity.this);
+					pg.setText(String.valueOf(it.page + 1));
+					pg.setTextSize(13);
+					pg.setTextColor(0xFF757575);
+					pg.setPadding(dp(12), 0, 0, 0);
+					row.addView(pg);
+				}
+				return row;
+			}
+		});
+		final AlertDialog dialog = new AlertDialog.Builder(this, R.style.MyDialog)
+				.setTitle(R.string.contents)
+				.setView(list)
+				.setNegativeButton(R.string.cancel, null)
+				.create();
+		list.setOnItemClickListener((p, v, pos, id) -> {
+			MuPDFCore.OutlineItem it = items.get(pos);
+			if (it.page >= 0 && docView != null) {
+				docView.goToPage(it.page);
+				dialog.dismiss();
+			}
+		});
+		dialog.show();
+	}
+
+	@Override
+	protected void onPause() {
+		rememberPosition();
+		super.onPause();
+	}
+
+	@Override
+	protected void onDestroy() {
+		closeCore();
+		super.onDestroy();
+	}
+}
